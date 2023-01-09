@@ -1,7 +1,7 @@
 # Overview:
 
 The database to be used includes data from:
-General Practice Prescribing Data Extract for Wales: This database contains information on what medications GP practices in Wales prescribe. It includes all prescribing results uo to 2015, combined in Wales.
+General Practice Prescribing Data Extract for Wales: This database contains information on what medications GP practices in Wales prescribe. It includes all prescribing results up to 2015, combined in Wales.
 
 QOF Results for Wales: This is a database of how each GP practice performed according to the Quality and Outcomes framework. It further includes counts of how many people at each practice were diagnosed with certain diseases, as well as some performance measures.
 
