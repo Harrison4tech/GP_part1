@@ -7,7 +7,7 @@ QOF Results for Wales: This is a database of how each GP practice performed acco
 
 The goal of this script is to design and implement an R program that reports some information. The database hosting these dataset would be queried in SQL and the database would be connected to R for further analysis.
 
-# Project 1: First part analysis of GP Practice in Wales
+# [Project 1: First part analysis of GP Practice in Wales] (https://github.com/Harrison4tech/GP_part1)
 
 Allow the user to select a GP practice.
 * What five drugs does the practice spend the most money on?
