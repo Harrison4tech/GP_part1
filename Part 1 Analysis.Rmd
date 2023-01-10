@@ -1,0 +1,545 @@
+---
+title: "My PMIM102 Resubmission"
+author: "Harrison"
+date: '2022-11-14'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Please refer to the user documentation
+# Assessment 1.0 - Project
+
+This script has been designed to answer a series of questions and perform specific analysis.
+
+The database to be used includes data from:
+1. General Practice Prescribing Data Extract for Wales: This database contains information on what medications GP practices in Wales prescribe. It includes all prescribing results uo to 2015, combined in Wales.
+
+2. QOF Results for Wales: This is a database of how each GP practice performed according to the Quality and Outcomes framework. It further includes counts of how many people at each practice were diagnosed with certain diseases, as well as some performance measures.
+
+## Assessment 2.0 - Objective
+
+The goal of this script is to design and implement an R program that reports some information. The database hosting these dataset would be queried in SQL and the database would be connected to R for further analysis.
+
+## Assessment 3.0 - Packages
+
+Packages to be used includes:
+
+1. Tidyverse: For data manipulation
+2. RPostGreSQL: To gain access to PostGreSQL in R
+3. GetoptLong: variable interpolation
+4. ggplot2: To make plots and charts
+
+NB: If you do not have these packages listed above installed yet, please install them.
+
+For items not covered by BNF chapters '1' to '15', NHS Prescription Services has created pseudo BNF chapters. The majority of these items are dressings and appliances, which have been divided into four pseudo BNF chapters '20' to '23'. Preparations used in diagnosis and 'other preparations' are covered in Chapters '18' and '19'. There are no chapters '16' or '17'.
+
+```{r}
+#install these packages if you do nothave them by removing '#'
+#install.packages("tidyverse")
+#install.packages(RPostgreSQL)
+#install.packages(GetoptLong) 
+#install.packages(ggplot2)lyr)
+
+# Load the required packages
+library(tidyverse)
+library(RPostgreSQL)
+library(GetoptLong)
+library(ggplot2)
+```
+
+
+```{r}
+# connect R to PostgreSQL to access the database.
+tryCatch({ 
+drv <- dbDriver("PostgreSQL")
+print("Connecting to Database…")
+con <- dbConnect(drv, dbname = "gp_practice_data", # edit this if your database is different in PostgreSQL
+                 host = "localhost", 
+                 port = 5432, # edit this if your port  different in PostgreSQL
+                 user = "postgres", 
+                 password = rstudioapi::askForPassword())
+ print("Database Successfully Connected!")
+    },
+    error=function(con) {
+            print("Unable to connect to Database.")
+    })
+```
+
+
+```{r}
+# check for the available tables in the database
+cat('Below are the following available tables gotten from the Database:\n')
+tables <- dbListTables(con)
+print(tables)
+```
+
+```{r}
+# Create a list of available practiceID so that the user would know what to select from
+prac_list <- dbGetQuery(con, qq("select practiceid, street, area, posttown, county, postcode
+                                from address
+                                WHERE LENGTH(practiceid) > 3
+                                order by practiceid asc;"))
+# Get the number of available practices in Wales
+no_prac <- nrow(prac_list) 
+
+cat('\nBelow is a table of practices in Wales along with their Unique code (practiceid). There are', no_prac,'practices in Wales.\n\n')
+print(prac_list)
+```
+
+```{r}
+# Data validation
+# The code below validates the program to be able to accept a valid practice id. If the user inputs a practice ID that is not found in the data, the program will return an error and prompt the user to type in a new valid practice id.
+
+User_PracticeInput <- function(){ 
+  b <- ""
+  while(b == ""){
+    b <- readline(prompt="Enter a practice ID (Wxxxxx): ")
+    if(tolower(b) == "q"){
+      break
+    } 
+    if(grepl('^W[0-9]{5}$', b)==FALSE){
+      print ("Data not found")
+      print("Please try again or select another practice ID.")
+      b <- "" 
+    } 
+  } 
+  return(b)
+}
+
+User_PracticeID <- User_PracticeInput()
+
+cat('\nDone!.. Practice ID is Available\n\n')
+```
+
+```{r}
+# Check if the selected practice has medication data available
+PracticeId <- dbGetQuery(con, qq('SELECT *
+                                FROM gp_data_up_to_2015 
+                                WHERE practiceid = \'@{User_PracticeID}\''))
+
+if (nrow(PracticeId) == 0) {
+  cat("Sorry, This practice does not have medication data available. Select a new practice ID and re-run")
+  User_PracticeID <- User_PracticeInput()
+} else {
+cat('\nThe selected practice:', User_PracticeID,'has medication data\n\n')
+cat('\nPreviewing first five entries... Loading information, please wait...\n\n')
+head(PracticeId, 5)
+}
+
+```
+- The result above contains medication information from the selected practice ID.
+
+Q1. What five drugs does the practice spend the most money on?
+```{r}
+# Find the drugs the selected practice spends the most money on
+
+# Extract the required variables of medication data for the selected practice
+Practice_Med <- dbGetQuery(con, qq('select practiceid, bnfname, nic
+                                  from gp_data_up_to_2015
+                                  WHERE practiceid = \'@{User_PracticeID}\''))
+
+# Sum the total Net Ingredient Cost and group by the bnfname for the practice
+Practice_Med_tbl <- Practice_Med %>% group_by(practiceid, bnfname) %>% 
+              summarise(total_spend = sum(nic),
+            .groups = 'drop') %>% as.data.frame() %>% arrange(desc(total_spend))
+
+cat('\nBelow are the top 5 drugs that the selected practice:',User_PracticeID,'spent the most money on\n\n')
+head(Practice_Med_tbl, 5)
+```
+Q2. What region is this practice in?
+
+```{r}
+# Get the locality/region the selected practice belongs to by using the Health Board.
+
+# To find out the region this selected practice belong to. We will be categorising this by local health boards. As of 2016, when this data was collected, there were 7 local health boards in Wales of which each covers certain areas/localities in Wales.
+
+# This information was extracted from: https://dhcw.nhs.wales/information-services/information-standards/data-standards/data-standards-files/data-standard-change-notices-docs/dscns-2009/dscn-2009-08-w-nhs-reforms-v1-0-final-02-07-09-pdf/
+
+#Each Local health board has a code, and we will recode the different health boards according to their locality.
+
+# extract local health board of the selected practice
+Practice_Reg <- dbGetQuery(con, qq('select hb, practiceid
+                                  from gp_data_up_to_2015
+                                  WHERE practiceid = \'@{User_PracticeID}\''))
+
+# recode the health board
+Practice_Reg$hb <- recode(Practice_Reg$hb,
+                           "7A1" = "Betsi Cadwaladr University Health Board",
+                           "7A2" = "Hywel Dda University Health Board",
+                           "7A3" = "Abertawe Bro Morgannwg University Local Health Board",
+                           "7A4" = "Cardiff and Vale University Health Board",
+                           "7A5" = "Cwm Taf Morgannwg University Health Board",
+                           "7A6" = "Aneurin Bevan Local Health Board",
+                           "7A7" = "Powys Teaching Local Health Board")
+
+practice_hb <- head(Practice_Reg, 1)
+print(paste("The selected practice ID:", User_PracticeID, "belongs to", practice_hb$hb, "region/locality in Wales"))
+```
+
+
+
+Q3. How does this practice’s rate of smoking compare to Wales as a whole, as well as other practices in its region? Create a way of showing this (through plots and/or numerical results) to the user.
+
+Step 1: To do this, extract smoking information for selected practice ID and smoking information for all of Wales and the merge the data together into one table.
+
+NB: The 'ratio' variable from the table represents the rate.
+Step 2: Multiply the 'ratio' variable by 100 to get the rate in percent.
+
+Step 3: Compare the rates side by side and then create a visualisation.
+```{r}
+# SMO SCR: The contractor establishes  and maintains a register of patients with established hypertension.
+# WAL: Represents Wales in general.
+
+# Get smoking information for the selected practice
+smok_practice <- dbGetQuery(con, qq("select orgcode, indicator, numerator, field4, 
+                                    ratio as rate, year
+                                    from qof_achievement
+                                    where indicator like 'SMO SCR%' 
+                                    and orgcode = \'@{User_PracticeID}\'"))
+
+cat('\nThe table below shows the smoking data from the selected practice ID:', User_PracticeID, '\n\n')
+
+if (nrow(smok_practice) == 0) {
+  cat("Sorry, This practice does not have smoking data available. Select a new practice ID and re-run")
+  User_PracticeID <- User_PracticeInput()
+} else {
+  # Multiply the 'ratio'by 100 to get the rate in percent
+print(paste("The rate of smoking in the selected practiceID:", User_PracticeID , "is", smok_practice$ratio * 100, "percent"))
+print(smok_practice)
+}
+
+# Get smoking data for the whole of Wales
+smok_wal <- dbGetQuery(con, qq("select orgcode, indicator, numerator, field4, 
+                                    ratio as rate, year
+                                    from qof_achievement
+                                    where indicator like 'SMO SCR%' 
+                                    and orgcode like 'WAL%'"))
+
+cat('\nThe table below shows the smoking data from all of Wales\n\n')
+
+# Multiply the 'ratio' by 100 to get the rate in percent.
+print(paste("The rate of smoking in the whole of Wales is", smok_wal$ratio * 100.00, "percent"))
+print(smok_wal)
+```
+
+
+# Merge the rate of smoking in the selected practice and rate of smoking in Wales together in a table.
+```{r}
+# merge both tables together and plot the rate of smoking
+smok_all<- rbind(smok_practice[,1:6], smok_wal)
+
+cat('\nThe table below shows the smoking data from the selected practice and Wales\n\n')
+print(smok_all)
+
+```
+- The table above shows the smoking data from the selected practice and Wales
+
+
+# Plot a bar chart of the rate of smoking in the selected practice vs Wales
+```{r}
+# Make comparison plot of rate of hypertension in selected practice vs Wales
+smo_chart <- ggplot(smok_all, aes(fill=orgcode, y=rate, x=indicator)) + 
+                    geom_bar(position="dodge", stat="identity") + 
+                    ggtitle("Rate of Smoking in selected practice compared to all of Wales") + 
+                    ylab("") + xlab("Smoking") +
+                    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) + 
+                    labs(fill = "")
+
+cat('\nPlotting chart, make take few seconds please wait...\n\n')
+print(smo_chart)
+```
+
+# Comparison of the Rate of smoking in the selected practice vs other practices in the same region/health board
+```{r}
+smo_prac_tbl <- dbGetQuery(con, qq("select gp_data_up_to_2015.practiceid, gp_data_up_to_2015.hb, qof_achievement.ratio as rate, 
+                              qof_achievement.indicator
+                              from gp_data_up_to_2015
+                              inner join qof_achievement on qof_achievement.orgcode = gp_data_up_to_2015.practiceid
+                              where qof_achievement.indicator like '%SMO SCR%'
+                              group by gp_data_up_to_2015.hb, 
+                              qof_achievement.ratio, 
+                              qof_achievement.indicator, 
+                              gp_data_up_to_2015.practiceid"))
+
+cat('\nLoading... make take some time! please wait\n\n')
+
+# Select the user selected practice and practices within the same health board/region
+practice_of_interest <- smo_prac_tbl %>% filter(practiceid ==User_PracticeID)
+practices_in_region <- smo_prac_tbl %>% filter(hb == practice_of_interest$hb & practiceid != User_PracticeID)
+
+# mergethe rate of smking in the selected practice and other practices in the same health board/region
+smo_reg_tbl <- rbind(practice_of_interest[,1:4], practices_in_region)
+
+cat('\nThis table contains the rate of smoking in the selected practice and other practices in the same region\n\n')
+print(smo_reg_tbl)
+
+# plot a bar chart showing a comparison of the rate of smoking in the selected practice against other practices in the same health board/region
+smo_reg_plot <- ggplot(smo_reg_tbl, aes(y=reorder(practiceid, rate), x=rate, fill = ifelse(practiceid == User_PracticeID, "selected practice", "other practices"))) + 
+  geom_bar(stat = "identity") +
+  ggtitle("Rate of Smoking in selected practice compared to other practices in the same health board (region)") + 
+  ylab("") + xlab("Rate of Smoking") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) + 
+  scale_fill_discrete(name = "") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cat('\nPlotting chart.. please wait\n\n')
+print(smo_reg_plot)
+
+```
+
+
+
+
+
+# Q4. Perform the following analyses (for all of Wales/all practices in Wales):
+--   a. Smoking is associated with a number of chronic diseases. 
+-- Use statistical analysis to show the relationship (if any) 
+-- between the rate of smoking at practices and the rates of the 
+-- following diseases: asthma, cancer, coronary heart disease, dementia, hypertension. 
+
+# Step 1: Extract information on the rate of smoking, asthma, cancer, coronary heart disease, dementia and hypertension at practices.
+Step 2: merge all the different rates for each variable in one table
+Step 3: Create a scatterplot to view the direction of the rates against each other
+Step 4: Run a correlation test and derive the strength and relationship between the rates (smoking vs asthma, cancer, coronary heart disease, dementia and hypertension)
+```{r}
+# Extract the information for the different rates in all practices
+# Below are the indicator and orgcode descriptions
+# SMO SCR: The number of patients with chronic diseases eligible for smoking screening
+# AST001: The contractor establishes and maintains a register of patients with asthma, excluding patients with asthma who have been prescribed no asthma-related drugs in the preceding 12 months
+# CAN001: Register of patients with a diagnosis of cancer excluding non-melanotic skin cancers diagnosed on or after 1 April 2003
+# CHD001: The contractor establishes and maintains a register of patients with coronary heart disease
+# DEM001: The contractor establishes and maintains a register of patients diagnosed with dementia
+# HYP001: The contractor establishes and maintains a register of patients with established hypertension
+# WAL: Represents the whole of Wales.
+
+# rate of smoking in all practices in Wales
+smo_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_smo
+                                from qof_achievement
+                                where indicator like 'SMO SCR%' 
+                                and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+# rate of asthma in all practices in Wales
+ast_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_ast
+                                from qof_achievement
+                                where indicator like 'AST001%' and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+# rate of cancer in all practices in Wales
+can_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_can
+                                from qof_achievement
+                                where indicator like 'CAN001%' and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+# rate of coronary heart disease in all practices in Wales
+chd_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_chd
+                                from qof_achievement
+                                where indicator like 'CHD001%' and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+# rate of dementia in all practices in Wales
+dem_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_dem
+                                from qof_achievement
+                                where indicator like 'DEM001%' and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+# rate of hypertension in all practices in Wales
+hyp_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_hyp
+                                from qof_achievement
+                                where indicator like 'HYP001%' and orgcode not like 'WAL%'
+                                order by orgcode asc"))
+
+
+# merge all tables (rate of smoking, asthma, cancer, coronary heart disease, dementia and hypertension together) by orgcode
+
+#put all tables into list
+rate_list <- list(smo_rate, ast_rate, can_rate, chd_rate, dem_rate, hyp_rate)      
+#merge the rate of all the diseases derived above into a table.
+cat('\nThe table below contains the rates of smoking, asthma, cancer, coronary heart disease, dementia and hypertension in all the practices in Wales.\n\n')
+rate_tbl <- rate_list %>% reduce(full_join, by='orgcode') %>% as.data.frame()
+print(rate_tbl)
+```
+
+
+# Create a scatter plot to view the direction of the variables (rate of smoking vs asthma, cancer, coronary heart disease, dementia and hypertension)
+```{r}
+# let's make a cleaner single plot for each variable
+# Rate of smoking vs Asthma
+Smo_Ast <- plot(rate_tbl$rate_smo ~ rate_tbl$rate_ast,
+     main = "Rate of Smoking vs Rate of Asthma in all practices in Wales", 
+     ylab = "Rate of smoking", 
+     xlab = "Rate of Asthma",
+      pch = 19, col = "purple")
+
+cat('\nPlotting, please wait..\n\n')
+print(Smo_Ast)
+
+# Rate of smoking vs Cancer
+Smo_Can <- plot(rate_tbl$rate_smo ~ rate_tbl$rate_can,
+     main = "Rate of Smoking vs Rate of Cancer in all practices in Wales", 
+     ylab = "Rate of smoking", 
+     xlab = "Rate of Cancer",
+      pch = 19, col = "blue")
+
+cat('\nPlotting, please wait..\n\n')
+print(Smo_Can)
+
+# Rate of smoking vs Coronary Heart Disease
+Smo_Chd <- plot(rate_tbl$rate_smo ~ rate_tbl$rate_chd,
+     main = "Rate of Smoking vs Rate of Coronary Heart Disease in all practices in Wales", 
+     ylab = "Rate of smoking", 
+     xlab = "Rate of Coronary Heart Disease",
+      pch = 19, col = "black")
+
+cat('\nPlotting, please wait..\n\n')
+print(Smo_Chd)
+
+# Rate of smoking vs Dementia
+Smo_Dem <- plot(rate_tbl$rate_smo ~ rate_tbl$rate_dem,
+     main = "Rate of Smoking vs Rate of Dementia in all practices in Wales", 
+     ylab = "Rate of smoking", 
+     xlab = "Rate of Dementia",
+      pch = 19, col = "red")
+
+cat('\nPlotting, please wait..\n\n')
+print(Smo_Dem)
+
+# Rate of smoking vs Hypertension
+Smo_Hyp <- plot(rate_tbl$rate_smo ~ rate_tbl$rate_hyp,
+     main = "Rate of Smoking vs Rate of Hypertension in all practices in Wales", 
+     ylab = "Rate of smoking", 
+     xlab = "Rate of Hypertension",
+      pch = 19, col = "orange")
+
+cat('\nPlotting, please wait..\n\n')
+print(Smo_Hyp)
+```
+- The several plots above show the direction of the rate of smoking in Wales vs rate of asthma, cancer, coronary heart disease, dementia and hypertension. It further indicates a positive correlation which shows that the rate of smoking increases as the rate of asthma, cancer, coronary heart disease and hypertension increases. 
+
+- To test the strength of these relationships, we will perform a correlation test and determine it through the coefficients.
+Null hypothesis: There is no relationship between the rate of smoking and the rate of chronic diseases in the population.
+Alternative hypothesis: There is a relationship between the rate of smoking and the rate of chronic diseases in the population.
+
+
+```{r}
+# Statistical analysis to show relationship between rate of smoking and chronic disease
+# List of chronic diseases we are working with: asthma, cancer, coronary heart disease, dementia, hypertension
+# asthma
+cor_ast <- cor.test(rate_tbl$rate_smo, rate_tbl$rate_ast, method = "pearson")
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_ast)
+
+print(paste("The p-value of the rate of smoking and the rate of asthma is:", cor_ast$p.value, "which is less than the significance level alpha = 0.05. We can therefore conclude that the rate of smoking and asthma are associated with a strong positive correlation coefficient of:", cor_ast$estimate, "in Wales"))
+
+```
+
+
+```{r}
+# cancer
+cor_can <- cor.test(rate_tbl$rate_smo, rate_tbl$rate_can)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_can)
+
+print(paste("The p-value of the rate of smoking and the rate of cancer is:", cor_can$p.value, "which is less than the significance level alpha = 0.05. We can therefore conclude that the rate of smoking and cancer are associated with a very strong positive correlation coefficient of:", cor_can$estimate, "in Wales"))
+```
+
+
+
+```{r}
+# coronary heart disease
+cor_chd <- cor.test(rate_tbl$rate_smo, rate_tbl$rate_chd)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_chd)
+
+print(paste("The p-value of the rate of smoking and the rate of coronary heart disease is:", cor_chd$p.value, "which is less than the significance level alpha = 0.05. We can therefore conclude that the rate of smoking and coronary heart disease are associated with a strong positive correlation coefficient of:", cor_chd$estimate, "in Wales"))
+```
+
+```{r}
+# dementia
+cor_dem <- cor.test(rate_tbl$rate_smo, rate_tbl$rate_dem)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_dem)
+print(paste("The p-value of the rate of smoking and the rate of dementia is:", cor_dem$p.value, "which is less than the significance level alpha = 0.05. We can therefore conclude that the rate of smoking and dementia are associated with a weak positive correlation coefficient of:", cor_dem$estimate, "in Wales"))
+```
+
+```{r}
+# Hypertension
+cor_hyp <- cor.test(rate_tbl$rate_smo, rate_tbl$rate_hyp)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_hyp)
+
+print(paste("The p-value of the rate of smoking and the rate of hypertension is:", cor_hyp$p.value, "which is less than the significance level alpha = 0.05. We can therefore conclude that the rate of smoking and hypertension are associated with a very strong positive correlation coefficient of:", cor_hyp$estimate, "in Wales"))
+
+```
+
+
+Q5. Do practices with higher rates of smoking spend more or less on medications?
+
+Step 1: Extract the rate of smoking information and order by the highest rate to the lowest rate
+Step 2: Determine the mean of the rates and set this as a cutoff to categorize the rates into low rate (below the mean)and high rate (above the mean)
+Step 3: Create a chart to visualise this analysis
+```{r}
+# To classify/group the rate of smoking to high rates and low rates. We will derive the mean of the rates of smoking and 
+# group rates of smoking below and above the mean rate.
+
+# High rates: rates above the mean
+# Low rates: rates below the mean
+
+# test
+smo_all <- dbGetQuery(con, qq("select qof_achievement.ratio, sum(gp_data_up_to_2015.nic) as sum
+                            from qof_achievement
+                            inner join gp_data_up_to_2015 on qof_achievement.orgcode=gp_data_up_to_2015.practiceid
+                            where indicator like 'SMO SCR%' and orgcode not like 'WAL%'
+                            group by orgcode, ratio
+                            order by ratio desc"))
+
+cat('\nLoading, may take some time! please wait...\n\n')
+print(smo_all)
+
+# Calculate the mean (cutoff) of the rates of smoking
+avg_rate <- as.numeric(mean(smo_all$ratio))
+cat('\nThe mean of rates of smoking is', avg_rate,'in Wales\n\n')
+
+# Set the rows with rates lower than the mean
+low_rates <- subset(smo_all, ratio < avg_rate)
+cat('\nRates below', avg_rate,'are considered low rates of smoking\n\n')
+
+
+# Set the rows with rates higher than the average
+high_rates <- subset(smo_all, ratio > avg_rate)
+cat('\nRates above', avg_rate,'are high rates of smoking\n\n')
+
+# find the number of practices with low and high rates of smoking
+no_prac <- smo_all$ratio < avg_rate
+summary(no_prac)
+cat('\nThere are',nrow(low_rates), 'practices with low rates of smoking and',nrow(high_rates), 'practices with high rates of smoking in Wales\n\n')
+
+# Create a scatterplot chart of the the rates of smoking and total spend on medication in all the practices in Wales
+cat('\nPlotting chart, please wait...\n\n')
+ggplot(data = smo_all, aes(x = ratio, y = sum)) +
+  geom_point(data = low_rates, color = "blue") +
+  geom_point(data = high_rates, color = "red") +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::number) +
+  ggtitle("Rates of smoking and total spend (£) 
+  on presciptions in all the practices in Wales") +
+  xlab("Rates of smoking in practices") +
+  ylab("")
+
+```
+- The graph shows that practices with high rates (red) of smoking do not necessarily spend so much on medications compared to practices with low rates (blue) of smoking. However, there are only three practices with high rates of smoking that spent above £10,000,000 on medications.
+
+```{r}
+# Close the connection and unload the drivers.
+dbDisconnect(con)
+```
+
+```{r}
+cat('\nEnd of analysis. Thank you for using Harrison\'s code.\n',
+    'For support, please contact Harrison on\n',
+    'Imoetinharrison@gmail.com')
+```
+

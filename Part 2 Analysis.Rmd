@@ -1,0 +1,554 @@
+---
+title: "PMIM102 Resubmission Part 2"
+author: "2140714"
+date: '2022-12-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+- Description of Health Boards in Wales to choose from in Wales
+
+7A1: Betsi Cadwaladr University Health Board
+7A2: Hywel Dda University Health Board
+7A3: Abertawe Bro Morgannwg University Local Health Board
+7A4: Cardiff and Vale University Health Board
+7A5: Cwm Taf Morgannwg University Health Board
+7A6: Aneurin Bevan Local Health Board
+7A7: Powys Teaching Local Health Board
+
+- Objectives:
+1.0: What is the total prescriptions from April 2013 to December 2015?
+2.0: Find out information about the prescription by health boards in Wales
+3.0: What is the total items prescribed for therapeutic classes
+4.0: Analyse and visualise the number of items prescribed/percentage time change from the top 2 largest therapeutic classes ('Cardiovascular System' and 'Endrocrine System') between April 2013 and December 2015.
+5.0: Find the rate of diabetes in all the different local Health Boards in Wales
+6.0: Find the statistical relationship between the rate of dementia vs the rate of smoking and diabetes
+
+
+```{r}
+#install these packages if you do not have them
+#install.packages("tidyverse")
+#install.packages(RPostgreSQL)
+#install.packages(GetoptLong) 
+#install.packages(ggplot2)
+
+# Load the required packages
+library(tidyverse)
+library(RPostgreSQL)
+library(GetoptLong)
+library(ggplot2)
+
+theme_set(theme_minimal()) #preset charts to have a minimalistic theme
+```
+
+```{r}
+# connect R to PostgreSQL to access the database and run SQL
+tryCatch({ 
+drv <- dbDriver("PostgreSQL")
+print("Connecting to Database…")
+con <- dbConnect(drv, dbname = "gp_practice_data", # edit this if your database is different in PostgreSQL
+                 host = "localhost", 
+                 port = 5432, # edit this if your port is different in PostgreSQL
+                 user = "postgres", 
+                 password = rstudioapi::askForPassword())
+ print("Database Successfully Connected!")
+    },
+    error=function(con) {
+            print("Unable to connect to Database.")
+    })
+```
+
+```{r}
+# validate the data from the database
+# check for the available tables in the database
+cat('\nBelow are the following available tables gotten from the Database:\n')
+tables <- dbListTables(con)
+print(tables)
+```
+```{r}
+# Get the list of Health Boards to choose from in Wales
+hb_list <- dbGetQuery(con, qq("select practiceid as hb_id, locality, street, area, posttown, county, postcode
+                              from address
+                              WHERE practiceid like '7%'
+                              order by practiceid asc;"))
+
+cat('\nBelow is a table containing information on Health Boards in Wales along with their Unique code (hb). There are', nrow(hb_list), 'health boards in Wales.\n')
+print(hb_list)
+```
+
+We would perform some analysis using the local health boards
+- Allow user to select a Health Board using the unique ID
+```{r}
+# Data validation
+# Allow user to select a health board. 
+# Health boards are represented by a unique code between 7A1 and 7A7.
+User_Input <- function(){ 
+  a <- ""
+  while(a == ""){
+    a <- readline(prompt="Enter Health Board (7Ax): ")
+    if(tolower(a) == "q"){
+      break
+    } 
+    if(grepl('^7A[1-7]{1}$', a)==FALSE){
+      print ("Data does not exist")
+      print("Please try again or select another Health Board.")
+      a <- "" 
+    } 
+  } 
+  return(a)
+}
+
+Health_Board <- User_Input()
+cat('\nDone!.. Health Board is Available\n\n')
+```
+
+```{r}
+# Get health board from user input
+# Check if the user selected Health Board has prescription data available
+User_Hb <- dbGetQuery(con, qq('select *
+                              from gp_data_up_to_2015
+                              where hb = \'@{Health_Board}\''))
+                              
+cat('\nLoading information, make take some time! please wait...\n\n')
+print(User_Hb)
+```
+
+
+# Objective 1: What is the total prescriptions from April 2013 to December 2015?
+
+# 1.1
+List of prescribed items in the selected health board from April 2013 to December 2015
+```{r}
+hb_pres_list <- dbGetQuery(con, qq('select hb, period, bnfcode, items
+                            from gp_data_up_to_2015
+                            where hb = \'@{Health_Board}\'
+                            group by hb, bnfcode, items, period')) 
+
+# Group by sum
+hb_pres_tbl <- hb_pres_list %>% group_by(period, hb) %>% 
+              summarise(total_pres = sum(items),
+            .groups = 'drop') %>% as.data.frame()
+
+# recode the health board
+hb_pres_tbl$hb <- recode(hb_pres_tbl$hb,
+                           "7A1" = "Betsi Cadwaladr University Health Board",
+                           "7A2" = "Hywel Dda University Health Board",
+                           "7A3" = "Abertawe Bro Morgannwg University Local Health Board",
+                           "7A4" = "Cardiff and Vale University Health Board",
+                           "7A5" = "Cwm Taf Morgannwg University Health Board",
+                           "7A6" = "Aneurin Bevan Local Health Board",
+                           "7A7" = "Powys Teaching Local Health Board")
+
+cat('The table contains the total items prescribed in', Health_Board, 'between 2013/04 and 2015/12:\n', sep=' ')
+print(hb_pres_tbl)
+
+```
+
+
+# 1.2
+
+The total monthly spend on prescription in the selected health board from April 2013 to December 2015
+```{r}
+## plot the monthly trend from 2013 to 2015
+# convert period to date format
+hb_pres_tbl$date <- format(as.Date(paste(hb_pres_tbl$period, '01'), '%Y%m%d'), '%Y-%m-%d')
+hb_pres_tbl$date <- as.Date(hb_pres_tbl$date)
+str(hb_pres_tbl) # confirm the structure
+
+# Plot chart
+plot1 <- ggplot(hb_pres_tbl, aes(y=total_pres, x=date, fill = ifelse(total_pres == min(total_pres), "Lowest", ifelse(total_pres == max(total_pres), "Highest", "Others")))) + 
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Monthly Total of items prescribed in the selected Health Board between April 2013 and December 2015") +
+  ylab("") + xlab("") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(name = "Total Prescriptions", values = c("Lowest" = "#1B998B", "Highest" = "#287271", "Others" = "steelblue")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+
+cat('\nPlotting monthly total of items prescribed in', Health_Board, 'between April 2013 and December 2015:\n')
+print(plot1)
+
+```
+
+
+Objective 2.0: Find out information about the prescription for different classes and in health boards
+
+# 2.1
+
+From the data 'bnfchapter' is the unique code that represents the disease treatment/therapeutic class.
+
+The unique code (bnfchapter) are digits between 01 and 15, 18 and 23, each representing different treatment/therapeutic class. We can furthermore see that these digits are the first two digits in' bnfchemical'. With this information we can deduce the treatment/therapeutic category from prescription data.
+
+```{r}
+# extract therapeutic class data   
+dis_cat <- dbGetQuery(con, qq('select distinct bnfchapter, chapterdesc
+                              from bnf
+                              order by bnfchapter asc'))
+
+cat('\nLoading therapeutic class, please wait...\n\n')
+print(dis_cat)
+```
+- The table above show the code representing the body's therapeutic system
+
+
+# 2.2
+
+# Create a new variable (med_id) from the first two digits of the bnfcode from 'gp_data_up_to_2015' data
+# This variable would help us identify different therapeutic classes as discovered in bnf data
+```{r}
+## Create a variable with the first two digits from the bnfcode. This will help us identify
+## the body system that each item was prescribed for.
+
+dis_tbl <- dbGetQuery(con, qq('SELECT LEFT(bnfcode, 2) AS med_id, 
+                              hb, items, nic, actcost, period
+                              FROM gp_data_up_to_2015'))
+
+cat('\nLoading information, make take some time! please wait...\n\n')
+print(dis_tbl)
+
+# validate the newly created table
+no_row <- nrow(dis_tbl) 
+cat('\nThe total amount of entries this new table has is:', no_row,'. The new table is validated as it still contains 21596397 entries corresponding with the original gp_data_up_to_2015 data. This indicates that after creating a new variable the data has not been distorted.\n\n')
+```
+
+# 2.3
+
+Q: Find the total number items prescribed to treat different therapeutic classes in health boards in Wales
+```{r}
+## select the required variables needed to find the total number of items prescribed for the different therapeutic classes
+class_treat_all <- dis_tbl %>% select(med_id, hb, items, period)
+
+## recode the therapeutic classes from the code to their description
+class_treat_all$med_id <- recode(class_treat_all$med_id,
+                           "01" = "Gastro-Intestinal System",
+                           "02" = "Cardiovascular System",
+                           "03" = "Respiratory System",
+                           "04" = "Central Nervous System",
+                           "05" = "Infections",
+                           "06" = "Endocrine System",
+                           "07" = "Obstetrics Gynae+Urinary Tract Disorders",
+                           "08" = "Malignant Disease & Immunosuppression",
+                           "09" = "Nutrition And Blood",
+                           "10" = "Musculoskeletal & Joint Diseases",
+                           "11" = "Eye",
+                           "12" = "Ear, Nose And Oropharynx",
+                           "13" = "Skin",
+                           "14" = "Immunological Products & Vaccines",
+                           "15" = "Anaesthesia",
+                           "18" = "Preparations used in Diagnosis",
+                           "19" = "Other Drugs And Preparations",
+                           "20" = "Dressings",
+                           "21" = "Appliances",
+                           "22" = "Incontinence Appliances",
+                           "23" = "Stoma Appliances")
+
+# recode the local health boards from their code to the names of the health board
+class_treat_all$hb <- recode(class_treat_all$hb,
+                           "7A1" = "Betsi Cadwaladr University Health Board",
+                           "7A2" = "Hywel Dda University Health Board",
+                           "7A3" = "Abertawe Bro Morgannwg University Local Health Board",
+                           "7A4" = "Cardiff and Vale University Health Board",
+                           "7A5" = "Cwm Taf Morgannwg University Health Board",
+                           "7A6" = "Aneurin Bevan Local Health Board",
+                           "7A7" = "Powys Teaching Local Health Board")
+
+
+cat('\nThe table shows the total items prescribed in the local health boards\n\n')
+print(class_treat_all)
+```
+# 2.4
+
+# Visualisation: 'Prescription in Health Boards'
+# Plot the total number of items prescribed in the Health Boards in Wales between April 2013 and December 2015
+```{r}
+# Analyse the total number of items prescribed by Health Boards in Wales between April 2013 and December 2015
+class_tbl_all <- class_treat_all %>%
+  group_by(med_id, hb, period) %>%
+  # Calculate the total value for each class and order from top to bottom
+  summarize(total = sum(items)) %>% ungroup() 
+
+# set the items variable to numeric
+class_tbl_all$total <- as.numeric(class_tbl_all$total)
+
+hb_plot2 <- ggplot(class_tbl_all, aes(x = total, y = reorder(hb, total))) +
+                  ggtitle("Total number of items prescribed by Health Boards in Wales (April                   2013 to December 2015") + 
+                  ylab("") + xlab("") +
+                  geom_bar(fill = "#287271", stat = "identity") +
+                  scale_x_continuous(labels = scales::comma) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+print(hb_plot2)
+cat('\nPlotting, please wait...\n\n')
+cat('\nPowys Teaching Health Board prescribed fewer items than any other Health Boards in Wales\n\n')
+```
+
+
+# Objective 3.0: What is the total items prescribed for therapeutic classes
+
+# 3.1
+# Visualisation: Prescription for different therapeutic classes
+```{r}
+# plot total items prescribed by therapeutic class in health boards
+class_plot3 <- ggplot(class_tbl_all, aes(y = reorder(med_id, total), x = total)) + 
+                  geom_bar(fill = "#287271", stat = "identity") +
+                  ggtitle("Total Number of Items Prescribed by classes 
+                  between April 2013 and December 2015 in Wales") + 
+                  ylab("") + xlab("") +
+                  labs(fill = "Local Health Boards") +
+                  scale_x_continuous(labels = scales::comma) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cat('\nPlotting total of items prescribed for therapeutic classes in local health boards in Wales\n\n')
+print(class_plot3)
+cat('\nThere are no items prescribed in the ‘preparations used in diagnosis’ class between April 2015 and December 2015\n\n')
+cat('\nThe top two therapeutic classes that had the highest number of prescriptions were Cardiovascular System and Central Nervous System \n\n')
+
+```
+
+
+# Objective 4.0: Analyse and visualise the number of items prescribed/percentage time change from the top 2 largest therapeutic classes ('Cardiovascular System' and 'Endrocrine System') between April 2013 and December 2015.
+
+# 4.1
+# Analysis for Class: Cardiovascular system
+```{r}
+# Cardiovascular analysis
+# select thevariables needed for this analysis
+test_tbl <- class_treat_all %>% select(med_id, items, period)
+head(test_tbl) # preveiew the data
+
+
+# filter the data by the class we intend to analyse: 'Cardiovascular System'
+cardio_class <- test_tbl %>% filter(med_id == "Cardiovascular System")
+head(cardio_class) # preview the data
+
+# create correct date format
+# Add the day "01" to the date column
+cardio_class$date <- format(as.Date(paste(cardio_class$period, '01'), '%Y%m%d'), '%Y-%m-%d')
+cardio_class$date <- as.Date(cardio_class$date)
+
+# validate the date variable is properly format by looking at its structure
+str(cardio_class)
+
+# sum the total items prescribed and group by the date and class and create a new table
+cardio_tbl <- cardio_class %>%
+  group_by(date, med_id) %>%
+  # Calculate the total value for each group
+  summarize(total = sum(items)) %>% ungroup()
+
+head(cardio_tbl) # preview the data
+
+# get percentage
+cardio_tbl$percent <- cardio_tbl$total / sum(cardio_tbl$total)
+
+# Create the plot
+cardio_plot4 <- ggplot(cardio_tbl, aes(x = date, y = percent)) +
+                      geom_line() +
+  ggtitle("Yearly change of items prescibed for Cardiovascular Class between April 2013 and December 2015") +
+                      labs(x = "Date", y = "Number of items prescribed") +
+                      ylab ("") + xlab ("") +
+                      scale_y_continuous(labels = scales::percent) +
+                      theme(panel.grid.major = element_blank(), 
+                      panel.grid.minor = element_blank())
+
+print(cardio_plot4)
+cat('\nPlotting, please wait...\n\n')
+```
+
+# 4.2
+# Analysis for Class: Central Nervous System
+```{r}
+#Central Nervous System analysis
+
+# filter the data by the class we intend to analyse: 'Endrocrine System'
+cns_class <- test_tbl %>% filter(med_id == "Central Nervous System")
+head(cns_class) # preview the data
+
+# create correct date format
+# Add the day "01" to the date column
+cns_class$date <- format(as.Date(paste(cns_class$period, '01'), '%Y%m%d'), '%Y-%m-%d')
+cns_class$date <- as.Date(cns_class$date)
+
+# validate the date variable is properly format by looking at its structure
+str(cns_class)
+
+# sum the total items prescribed and group by the date and class and create a new table
+cns_tbl <- cns_class %>%
+  group_by(date, med_id) %>%
+  # Calculate the total value for each group
+  summarize(total = sum(items)) %>% ungroup()
+
+head(cns_tbl) # preview the data
+
+# get percentage
+cns_tbl$percent <- cns_tbl$total / sum(cns_tbl$total)
+
+# Create the plot
+cns_plot5 <- ggplot(cns_tbl, aes(x = date, y = percent)) +
+                    geom_line() +
+                    ggtitle("Yearly change of total items prescribed for Central Nervous System between April 2013 and December 2015") +
+                    labs(x = "Date", y = "Number of items prescribed") +
+                    ylab ("") + xlab("") +
+                    scale_y_continuous(labels = scales::percent) +
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+print(cns_plot5)
+cat('\nPlotting, please wait...\n\n')
+```
+
+
+
+# Objective 5.0: Find the rate of diabetes in all the different local Health Boards in Wales
+
+# 5.1 
+
+# Analysis of the rate of diabetes
+
+```{r}
+# create a new table by joining disease information from qof_achievement to hb information from gp_data by practiceid
+hb_dm <- dbGetQuery(con, qq("select gp_data_up_to_2015.hb, 
+                          gp_data_up_to_2015.practiceid, 
+                          qof_achievement.numerator, qof_achievement.field4, 
+                          qof_achievement.indicator
+                          from gp_data_up_to_2015
+                          inner join qof_achievement on qof_achievement.orgcode =                                        gp_data_up_to_2015.practiceid
+                          where qof_achievement.indicator like '%DM001%'
+                          group by gp_data_up_to_2015.hb, 
+                          gp_data_up_to_2015.practiceid, 
+                          qof_achievement.numerator,
+                          qof_achievement.field4,
+                          qof_achievement.indicator;")) 
+
+cat('\nLoading... please wait\n\n')
+# recode the local health boards
+hb_dm$hb <- recode(hb_dm$hb,
+                           "7A1" = "Betsi Cadwaladr University Health Board",
+                           "7A2" = "Hywel Dda University Health Board",
+                           "7A3" = "Abertawe Bro Morgannwg University Local Health Board",
+                           "7A4" = "Cardiff and Vale University Health Board",
+                           "7A5" = "Cwm Taf Morgannwg University Health Board",
+                           "7A6" = "Aneurin Bevan Local Health Board",
+                           "7A7" = "Powys Teaching Local Health Board")
+
+# Sum the numerator and total population
+hba_tbl <- hb_dm %>% group_by(hb, indicator) %>% 
+  summarise(numerator = sum(numerator), population = sum(field4),
+            .groups = 'drop') %>% as.data.frame()
+
+
+# get the rate of diabetes for each health board by diving the people with diabetes over the entire population
+hba_tbl$rate <- hba_tbl$numerator / hba_tbl$population
+cat('\nThe table shows the rate of diabetes in all the different local health boards\n\n')
+print(hba_tbl)
+```
+
+
+# 5.2
+```{r}
+# plot a bar graph of the rate of diabetes in all the different health boards in Wales.
+hb_plot6 <- ggplot(hba_tbl, aes(fill=hb, y=rate, x=indicator)) + 
+                            geom_bar(position="dodge", stat="identity") +
+                            ggtitle("Rate of Diabetes at Health Boards in Wales in 2015") + 
+                            ylab("") + xlab("Rate of Diabetes") + 
+                            labs(fill = "Local Health Boards in Wales") +
+                            scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+                            scale_fill_manual(values=c("#003f5c", "#374c80", "#7a5195", "#bc5090", "#ef5675", "#ff764a", "#ffa600")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cat('\nPlotting chart, please wait...\n\n')
+print(hb_plot6)
+```
+
+Objective 6.0: Find the statistical relationship between the rate of dementia vs the rate of smoking and diabetes
+
+# 6.1
+```{r}
+# Smoking and diabetes are risk factors for dementia. This section analyses if there is a relationship between the rate of
+# diabetes, and smoking vs the rate of dementia in all the practices in Wales.
+
+# rate of dementia in all the practices in Wales
+dem_rate2 <- dbGetQuery(con, qq("select orgcode, ratio as rate_dem
+                                from qof_achievement
+                                where indicator like 'DEM001%' 
+                                and orgcode not like 'WAL%'"))
+
+
+# rate of diabetes in all the practices in Wales
+dia_rate <- dbGetQuery(con, qq("select orgcode, ratio as rate_dia
+                                from qof_achievement
+                                where indicator like 'DM001%' 
+                                and orgcode not like 'WAL%'"))
+
+# rate of smoking in all the practices in Wales
+smo_rate2 <- dbGetQuery(con, qq("select orgcode, ratio as rate_smo
+                                from qof_achievement
+                                where indicator like 'SMO SCR%' 
+                                and orgcode not like 'WAL%'"))
+
+# merge all tables (rate of dementia, diabetes and moking) by orgcode
+
+#put all tables into list
+rate_list <- list(dem_rate2, dia_rate, smo_rate2)      
+
+#merge all tables together
+cat('\nThe table below contains the rates of dementia, diabetes, smoking in all the practices in Wales.\n\n')
+rate_tbl2 <- rate_list %>% reduce(full_join, by='orgcode') %>% as.data.frame()
+print(rate_tbl2)
+
+```
+
+# 6.2
+
+```{r}
+# Rate of Dementia vs Diabetes in all the practices in Wales
+Dem_dia <- plot(rate_tbl2$rate_dem ~ rate_tbl2$rate_dia,
+     main = "Rate of Dementia vs Rate of Diabetes in all practices in Wales", ylab = "Rate of Dementia", 
+     xlab = "Rate of Diabetes",
+      pch = 19, col = "black")
+
+cat('\nPlotting, please wait..\n\n')
+print(Dem_dia)
+```
+```{r}
+# Rate of Dementia vs Smoking in all the practices in Wales
+Dem_smo <- plot(rate_tbl2$rate_dem ~ rate_tbl2$rate_smo,
+     main = "Rate of Dementia vs Rate of Diabetes in all practices in Wales", ylab = "Rate of Dementia", 
+     xlab = "Rate of Smoking",
+      pch = 19, col = "black")
+
+cat('\nPlotting, please wait..\n\n')
+print(Dem_smo)
+```
+
+# Perform Correlation
+
+# Correlation between the rate of dementia and the rate of diabetes
+```{r}
+cor_dem_dia <- cor.test(rate_tbl2$rate_dem, rate_tbl2$rate_dia)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_dem_dia)
+
+print(paste("The coefficient of the rate of dementia and diabetes is:", cor_dem_dia$estimate,"that indicates a weak positive correlation and with a p-value of:", cor_dem_dia$p.value,"that is below the significance level of 0.05"))
+```
+```{r}
+cor_dem_smo <- cor.test(rate_tbl2$rate_dem, rate_tbl2$rate_smo)
+cat('\nLoading correlation test, please wait..\n\n')
+print(cor_dem_smo)
+
+print(paste("The coefficient of the rate of dementia and smoking is:", cor_dem_smo$estimate,"that indicates a weak positive correlation and with a p-value of:", cor_dem_smo$p.value,"that is below the significance level of 0.05"))
+```
+
+```{r}
+# Close the connection and unload the drivers.
+dbDisconnect(con)
+```
+
+```{r}
+cat('\nEnd of analysis. Thank you for using Harrison\'s code.\n',
+    'For support, please contact Harrison on\n',
+    'Imoetinharrison@gmail.com')
+```
